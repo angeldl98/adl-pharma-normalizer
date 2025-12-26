@@ -1,6 +1,12 @@
 import { Pool } from "pg";
 
-const pool = new Pool();
+const pool = new Pool({
+  host: process.env.PGHOST || process.env.POSTGRES_HOST || "postgres",
+  user: process.env.PGUSER || process.env.POSTGRES_USER || "adl",
+  password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD || "",
+  database: process.env.PGDATABASE || process.env.POSTGRES_DB || "adl_core",
+  port: Number(process.env.PGPORT || "5432")
+});
 
 function clean(val) {
   if (!val) return null;
