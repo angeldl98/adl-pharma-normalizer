@@ -9,27 +9,38 @@ const pool = new Pool({
 });
 
 function clean(val) {
-  if (!val) return null;
+  if (val === undefined || val === null) return null;
   return val.toString().trim();
 }
 
-function normalizeEstado(status) {
-  const s = (status || "").toString().toLowerCase();
-  if (s.includes("act")) return "ACTIVA";
-  return "CERRADA";
+function msToIso(ms) {
+  if (!ms && ms !== 0) return null;
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function computeEstadoNorm(raw) {
+  const susp = raw.estado_susp;
+  const rev = raw.estado_rev;
+  const aut = raw.estado_aut;
+  // Prioridad: REV (retirado) > SUSPENDIDO > ACTIVO
+  if (rev) return { estado_norm: "RETIRADA", fecha_estado: msToIso(rev), estado_aemps: "RETIRADO" };
+  if (susp) return { estado_norm: "SUSPENDIDA", fecha_estado: msToIso(susp), estado_aemps: "SUSPENDIDO" };
+  return { estado_norm: "ACTIVA", fecha_estado: msToIso(aut), estado_aemps: "AUTORIZADO" };
 }
 
 async function ensureTables(client) {
   await client.query(`CREATE SCHEMA IF NOT EXISTS pharma_norm`);
   await client.query(`
-    CREATE TABLE IF NOT EXISTS pharma_norm.farmacias (
+    CREATE TABLE IF NOT EXISTS pharma_norm.medicamentos (
       id SERIAL PRIMARY KEY,
       raw_id INT UNIQUE,
-      name TEXT,
-      address TEXT,
-      municipality TEXT,
-      province TEXT,
-      status TEXT,
+      codigo_nacional TEXT,
+      nombre_medicamento TEXT,
+      laboratorio TEXT,
+      estado_aemps TEXT,
+      fecha_estado TIMESTAMPTZ,
       estado_norm TEXT,
       checksum TEXT UNIQUE,
       normalized_at TIMESTAMPTZ DEFAULT now()
@@ -39,10 +50,10 @@ async function ensureTables(client) {
 
 async function loadPending(client) {
   const res = await client.query(`
-    SELECT id, name, address, municipality, province, status, checksum
-    FROM pharma_raw r
+    SELECT id, nregistro, nombre, labtitular, labcomercializador, comerc, estado_aut, estado_rev, estado_susp, checksum, payload
+    FROM pharma_raw.medicamentos r
     WHERE NOT EXISTS (
-      SELECT 1 FROM pharma_norm.farmacias n WHERE n.raw_id = r.id
+      SELECT 1 FROM pharma_norm.medicamentos n WHERE n.raw_id = r.id
     )
   `);
   return res.rows;
@@ -51,21 +62,22 @@ async function loadPending(client) {
 async function insertNormalized(client, rows) {
   let inserted = 0;
   for (const row of rows) {
-    const estado_norm = normalizeEstado(row.status);
+    const { estado_norm, fecha_estado, estado_aemps } = computeEstadoNorm(row);
+    const laboratorio = clean(row.labtitular) || clean(row.labcomercializador);
     await client.query(
       `
-        INSERT INTO pharma_norm.farmacias
-          (raw_id, name, address, municipality, province, status, estado_norm, checksum, normalized_at)
+        INSERT INTO pharma_norm.medicamentos
+          (raw_id, codigo_nacional, nombre_medicamento, laboratorio, estado_aemps, fecha_estado, estado_norm, checksum, normalized_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
         ON CONFLICT (raw_id) DO NOTHING
       `,
       [
         row.id,
-        clean(row.name),
-        clean(row.address),
-        clean(row.municipality),
-        clean(row.province),
-        clean(row.status),
+        clean(row.nregistro),
+        clean(row.nombre),
+        laboratorio,
+        estado_aemps,
+        fecha_estado,
         estado_norm,
         row.checksum || null
       ]
